@@ -31,7 +31,7 @@ link_and_run() {
 
 build_lib() {
     SHOULD_CODEGEN=1 $RUSTC $2 --crate-name $1 --crate-type lib
-    extract_data lib$1.rlib $1.o
+    mv lib$1.rlib $1.o
 }
 
 run_bin() {
@@ -40,7 +40,7 @@ run_bin() {
 
 build_example_bin() {
     $RUSTC $2 --crate-name $1 --crate-type bin
-    extract_data $1 $1.o
+    mv $1 $1.o
 
     link_and_run $1 mini_core.o $1.o
 }

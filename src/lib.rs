@@ -93,7 +93,7 @@ mod prelude {
     pub use crate::Caches;
 
     pub fn should_codegen(sess: &Session) -> bool {
-        //return true;
+        return true;
         ::std::env::var("SHOULD_CODEGEN").is_ok()
             || sess.crate_types.get().contains(&CrateType::Executable)
     }
@@ -291,23 +291,7 @@ impl CodegenBackend for CraneliftCodegenBackend {
                         &ongoing_codegen.crate_name.as_str(),
                     );
                     let file = File::create(&output_name).unwrap();
-                    let mut builder = ar::Builder::new(file);
-                    builder
-                        .append(
-                            &ar::Header::new(
-                                metadata_name.as_bytes().to_vec(),
-                                metadata.len() as u64,
-                            ),
-                            ::std::io::Cursor::new(metadata.clone()),
-                        ).unwrap();
-                    if should_codegen(sess) {
-                        let obj = artifact.emit().unwrap();
-                        builder
-                            .append(
-                                &ar::Header::new(b"data.o".to_vec(), obj.len() as u64),
-                                ::std::io::Cursor::new(obj),
-                            ).unwrap();
-                    }
+                    artifact.write(file).unwrap();
                 }
                 _ => sess.fatal(&format!("Unsupported crate type: {:?}", crate_type)),
             }
