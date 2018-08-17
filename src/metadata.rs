@@ -19,6 +19,7 @@ impl MetadataLoader for CraneliftMetadataLoader {
                 .header()
                 .identifier()
                 .starts_with(b".rustc.clif_metadata")
+                || entry.header().identifier() == b"rust.metadata.bin"
             {
                 let mut buf = Vec::new();
                 ::std::io::copy(&mut entry, &mut buf).map_err(|e| format!("{:?}", e))?;

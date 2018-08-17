@@ -217,7 +217,7 @@ impl CodegenBackend for CraneliftCodegenBackend {
                 .finish(flags);
 
         let mono_items =
-            collector::collect_crate_mono_items(tcx, collector::MonoItemCollectionMode::Eager).0;
+            collector::collect_crate_mono_items(tcx, collector::MonoItemCollectionMode::Lazy).0;
 
         // TODO: move to the end of this function when compiling libcore doesn't have unimplemented stuff anymore
         save_incremental(tcx);
