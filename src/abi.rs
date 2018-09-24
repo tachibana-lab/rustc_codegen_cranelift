@@ -28,11 +28,18 @@ fn get_pass_mode<'a, 'tcx: 'a>(
     ty: Ty<'tcx>,
     is_return: bool,
 ) -> PassMode {
-    assert!(
-        !tcx.layout_of(ParamEnv::reveal_all().and(ty))
-            .unwrap()
-            .is_unsized()
-    );
+    use crate::rustc::ty::layout::Primitive;
+
+    let layout = tcx.layout_of(ParamEnv::reveal_all().and(ty)).unwrap();
+    assert!(!layout.is_unsized());
+
+    if let ty::layout::Abi::Scalar(ref scalar) = layout.abi {
+        match scalar.value {
+            Primitive::Pointer => return PassMode::ByVal(crate::common::pointer_ty(tcx)),
+            _ => {}
+        }
+    }
+
     if let ty::Never = ty.sty {
         if is_return {
             PassMode::NoPass

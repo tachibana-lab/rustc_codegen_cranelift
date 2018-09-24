@@ -17,6 +17,8 @@ unsafe extern "C" fn my_puts(s: *const u8) {
     puts(s);
 }
 
+extern "C" fn accept_opt_fn(f: Option<fn()>) {}
+
 // TODO remove when jit supports linking rlibs
 #[cfg(jit)]
 extern "C" fn panic<T>(_: T) -> ! {
