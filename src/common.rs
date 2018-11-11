@@ -1,5 +1,6 @@
 use std::fmt;
 
+use rustc::ty::layout::{Integer, Primitive};
 use rustc_target::spec::{HasTargetSpec, Target};
 
 use cranelift_module::Module;
@@ -19,13 +20,20 @@ pub fn pointer_ty(tcx: TyCtxt) -> types::Type {
     }
 }
 
-fn scalar_to_cton_type(tcx: TyCtxt, scalar: &Scalar) -> Type {
-    match scalar.value.size(&tcx).bits() {
-        8 => types::I8,
-        16 => types::I16,
-        32 => types::I32,
-        64 => types::I64,
-        size => bug!("Unsupported scalar size {}", size),
+pub fn scalar_to_cton_type(tcx: TyCtxt, scalar: &Scalar) -> Type {
+    match &scalar.value {
+        Primitive::Int(int_ty, _) => match int_ty {
+            Integer::I8 => types::I8,
+            Integer::I16 => types::I16,
+            Integer::I32 => types::I32,
+            Integer::I64 => types::I64,
+            Integer::I128 => unimplemented!("u/i128"),
+        }
+        Primitive::Float(float_ty) => match float_ty {
+            FloatTy::F32 => types::F32,
+            FloatTy::F64 => types::F64,
+        }
+        Primitive::Pointer => pointer_ty(tcx),
     }
 }
 

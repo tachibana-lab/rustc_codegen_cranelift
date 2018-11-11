@@ -28,22 +28,18 @@ fn get_pass_mode<'a, 'tcx: 'a>(
     ty: Ty<'tcx>,
     is_return: bool,
 ) -> PassMode {
-    assert!(!tcx
+    let layout = tcx
         .layout_of(ParamEnv::reveal_all().and(ty))
-        .unwrap()
-        .is_unsized());
-    if let ty::Never = ty.sty {
+        .unwrap();
+    assert!(!layout.is_unsized());
+    if layout.abi == layout::Abi::Uninhabited || layout.size.bytes() == 0 {
         if is_return {
             PassMode::NoPass
         } else {
             PassMode::ByRef
         }
-    } else if ty.sty == tcx.mk_unit().sty {
-        if is_return {
-            PassMode::NoPass
-        } else {
-            PassMode::ByRef
-        }
+    } else if let layout::Abi::Scalar(scalar) = &layout.abi {
+        PassMode::ByVal(scalar_to_cton_type(tcx, scalar))
     } else if let Some(ret_ty) = crate::common::cton_type_from_ty(tcx, ty) {
         PassMode::ByVal(ret_ty)
     } else {
@@ -65,7 +61,19 @@ fn adjust_arg_for_abi<'a, 'tcx: 'a>(
 ) -> Value {
     match get_pass_mode(fx.tcx, sig.abi, arg.layout().ty, false) {
         PassMode::NoPass => unimplemented!("pass mode nopass"),
-        PassMode::ByVal(_) => arg.load_value(fx),
+        PassMode::ByVal(_) => {
+            match arg {
+                CValue::ByVal(val, _layout) => val,
+                CValue::ByValPair(_, _, _) => unimplemented!("pass mode byval for CValue::ByValPair"),
+                CValue::ByRef(ptr, layout) => {
+                    let ty = match &layout.abi {
+                        layout::Abi::Scalar(scalar) => scalar_to_cton_type(fx.tcx, scalar),
+                        _ => unimplemented!(""),
+                    };
+                    fx.bcx.ins().load(ty, MemFlags::new(), ptr, 0)
+                }
+            }
+        },
         PassMode::ByRef => arg.force_stack(fx),
     }
 }
