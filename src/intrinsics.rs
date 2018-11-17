@@ -348,6 +348,19 @@ pub fn codegen_intrinsic_call<'a, 'tcx: 'a>(
             let res = CValue::ByVal(fx.bcx.ins().bitrev(arg), fx.layout_of(T));
             ret.write_cvalue(fx, res);
         };
+        bswap, <T> (v arg) {
+            fn swap(bcx: &mut FunctionBuilder, v: Value) -> Value {
+                if bcx.func.dfg.value_type(v) == types::I8 {
+                    return v;
+                }
+                let (begin, end) = bcx.ins().isplit(v);
+                let begin = swap(bcx, begin);
+                let end = swap(bcx, end);
+                bcx.ins().iconcat(end, begin)
+            };
+            let res = CValue::ByVal(swap(&mut fx.bcx, arg), fx.layout_of(T));
+            ret.write_cvalue(fx, res);
+        };
         needs_drop, <T> () {
             let needs_drop = if T.needs_drop(fx.tcx, ParamEnv::reveal_all()) {
                 1

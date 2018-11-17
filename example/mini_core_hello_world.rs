@@ -117,57 +117,8 @@ impl<T: ?Sized, U: ?Sized> CoerceUnsized<Unique<U>> for Unique<T> where T: Unsiz
 
 fn main() {
     unsafe {
-        let hello: &[u8] = b"Hello\0" as &[u8; 6];
-        let ptr: *const u8 = hello as *const [u8] as *const u8;
-        puts(ptr);
-
-        // TODO remove when jit supports linking rlibs
-        #[cfg(not(jit))]
-        {
-            let world: Box<&str> = box "World!\0";
-            puts(*world as *const str as *const u8);
-            world as Box<SomeTrait>;
+        if intrinsics::bitreverse(0b10101000u8) != 0b00010101u8 {
+            //intrinsics::abort();
         }
-
-        assert_eq!(intrinsics::size_of_val(hello) as u8, 6);
-
-        let chars = &['C', 'h', 'a', 'r', 's'];
-        let chars = chars as &[char];
-        assert_eq!(intrinsics::size_of_val(chars) as u8, 4 * 5);
-
-        let a: &dyn SomeTrait = &"abc\0";
-        a.object_safe();
-
-        assert_eq!(intrinsics::size_of_val(a) as u8, 16);
-        assert_eq!(intrinsics::size_of_val(&0u32) as u8, 4);
-
-        assert_eq!(intrinsics::min_align_of::<u16>() as u8, 2);
-        assert_eq!(intrinsics::min_align_of_val(&a) as u8, intrinsics::min_align_of::<&str>() as u8);
-
-        assert!(!intrinsics::needs_drop::<u8>());
-        assert!(intrinsics::needs_drop::<NoisyDrop>());
-
-        Unique {
-            pointer: 0 as *const &str,
-            _marker: PhantomData,
-        } as Unique<dyn SomeTrait>;
     }
-
-    let _ = NoisyDrop {
-        text: "Outer got dropped!\0",
-        inner: NoisyDropInner,
-    };
-
-    const FUNC_REF: Option<fn()> = Some(main);
-    match FUNC_REF {
-        Some(_) => {},
-        None => assert!(false),
-    }
-
-    match Ordering::Less {
-        Ordering::Less => {},
-        _ => assert!(false),
-    }
-
-    [NoisyDropInner, NoisyDropInner];
 }
