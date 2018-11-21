@@ -66,7 +66,7 @@ mod prelude {
         config::{CrateType, Lto},
         Session,
     };
-    pub use rustc::ty::layout::{self, Abi, LayoutOf, Scalar, Size, TyLayout, VariantIdx};
+    pub use rustc::ty::layout::{self, Abi, Align, LayoutOf, Scalar, Size, TyLayout, VariantIdx};
     pub use rustc::ty::{
         self, subst::Substs, FnSig, Instance, InstanceDef, ParamEnv, PolyFnSig, Ty, TyCtxt,
         TypeAndMut, TypeFoldable,
