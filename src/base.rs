@@ -122,6 +122,9 @@ fn trans_fn<'a, 'clif, 'tcx: 'a, B: Backend + 'static>(
         .define_function(func_id, &mut cx.caches.context)
         .unwrap();
     cx.caches.context.clear();
+
+    // Step 10. Define debuginfo??
+    // caches.context.func should have all the debug loc stuff?
 }
 
 fn verify_func(tcx: TyCtxt, writer: crate::pretty_clif::CommentWriter, func: &Function) {

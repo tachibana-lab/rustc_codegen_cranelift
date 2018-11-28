@@ -20,7 +20,7 @@ use std::sync::mpsc;
 use rustc::dep_graph::DepGraph;
 use rustc::middle::cstore::MetadataLoader;
 use rustc::session::{
-    config::{OutputFilenames, OutputType},
+    config::{DebugInfo, OutputFilenames, OutputType},
     CompileIncomplete,
 };
 use rustc::ty::query::Providers;
@@ -43,6 +43,7 @@ mod archive;
 mod base;
 mod common;
 mod constant;
+mod debuginfo;
 mod intrinsics;
 mod link;
 mod link_copied;
@@ -90,12 +91,16 @@ mod prelude {
     pub use cranelift::codegen::isa::CallConv;
     pub use cranelift::codegen::Context;
     pub use cranelift::prelude::*;
-    pub use cranelift_module::{Backend, DataContext, DataId, FuncId, Linkage, Module};
+    pub use cranelift_module::{
+        self, Backend, DataContext, DataId, DebugSectionContext, DebugSectionId, DebugReloc, FuncId, FuncOrDataId, Linkage,
+        Module,
+    };
     pub use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
 
     pub use crate::abi::*;
     pub use crate::base::{trans_operand, trans_place};
     pub use crate::common::*;
+    pub use crate::debuginfo::DebugContext;
     pub use crate::trap::*;
     pub use crate::unimpl::{unimpl, with_unimpl_span};
     pub use crate::{Caches, CodegenCx};
@@ -120,15 +125,21 @@ pub struct CodegenCx<'a, 'clif, 'tcx, B: Backend + 'static> {
     module: &'clif mut Module<B>,
     ccx: ConstantCx,
     caches: Caches<'tcx>,
+    debug_context: Option<&'clif mut DebugContext>,
 }
 
 impl<'a, 'clif, 'tcx, B: Backend + 'static> CodegenCx<'a, 'clif, 'tcx, B> {
-    fn new(tcx: TyCtxt<'a, 'tcx, 'tcx>, module: &'clif mut Module<B>) -> Self {
+    fn new(
+        tcx: TyCtxt<'a, 'tcx, 'tcx>,
+        module: &'clif mut Module<B>,
+        debug_context: Option<&'clif mut DebugContext>,
+    ) -> Self {
         CodegenCx {
             tcx,
             module,
             ccx: ConstantCx::default(),
             caches: Caches::default(),
+            debug_context,
         }
     }
 
@@ -225,7 +236,7 @@ impl CodegenBackend for CraneliftCodegenBackend {
                 .declare_function("main", Linkage::Import, &sig)
                 .unwrap();
 
-            codegen_cgus(tcx, &mut jit_module, &mut log);
+            codegen_cgus(tcx, &mut jit_module, &mut None, &mut log);
             crate::allocator::codegen(tcx.sess, &mut jit_module);
             jit_module.finalize_definitions();
 
@@ -281,7 +292,18 @@ impl CodegenBackend for CraneliftCodegenBackend {
 
             let mut faerie_module = new_module("some_file".to_string());
 
-            codegen_cgus(tcx, &mut faerie_module, &mut log);
+            let mut debug = if tcx.sess.opts.debuginfo != DebugInfo::None {
+                let debug = DebugContext::new(tcx, faerie_module.target_config().pointer_type().bytes() as u8, &mut faerie_module);
+                Some(debug)
+            } else {
+                None
+            };
+
+            codegen_cgus(tcx, &mut faerie_module, &mut debug, &mut log);
+
+            if let Some(debug) = debug {
+                debug.emit(&mut faerie_module);
+            }
 
             tcx.sess.abort_if_errors();
 
@@ -372,6 +394,7 @@ fn build_isa(sess: &Session) -> Box<isa::TargetIsa + 'static> {
 fn codegen_cgus<'a, 'tcx: 'a>(
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     module: &mut Module<impl Backend + 'static>,
+    debug: &mut Option<DebugContext>,
     log: &mut Option<File>,
 ) {
     let (_, cgus) = tcx.collect_and_partition_mono_items(LOCAL_CRATE);
@@ -382,7 +405,7 @@ fn codegen_cgus<'a, 'tcx: 'a>(
         .map(|(&mono_item, &(linkage, vis))| (mono_item, (linkage, vis)))
         .collect::<FxHashMap<_, (_, _)>>();
 
-    codegen_mono_items(tcx, module, log, mono_items);
+    codegen_mono_items(tcx, module, debug.as_mut(), log, mono_items);
 
     crate::main_shim::maybe_create_entry_wrapper(tcx, module);
 }
@@ -390,10 +413,11 @@ fn codegen_cgus<'a, 'tcx: 'a>(
 fn codegen_mono_items<'a, 'tcx: 'a>(
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     module: &mut Module<impl Backend + 'static>,
+    debug_context: Option<&mut DebugContext>,
     log: &mut Option<File>,
     mono_items: FxHashMap<MonoItem<'tcx>, (RLinkage, Visibility)>,
 ) {
-    let mut cx = CodegenCx::new(tcx, module);
+    let mut cx = CodegenCx::new(tcx, module, debug_context);
     time("codegen mono items", move || {
         for (mono_item, (linkage, vis)) in mono_items {
             unimpl::try_unimpl(tcx, log, || {
