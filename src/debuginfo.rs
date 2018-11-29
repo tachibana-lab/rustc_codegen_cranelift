@@ -5,6 +5,7 @@ use crate::prelude::*;
 use gimli::write::{
     Address, AttributeValue, DebugAbbrev, DebugInfo, DebugStr, EndianVec, Result, SectionId,
     StringTable, UnitId, UnitTable, Writer, CompilationUnit, DebugLineOffsets,
+    UnitEntryId,
 };
 use gimli::Format;
 
@@ -119,6 +120,27 @@ impl DebugContext {
             _ => unimplemented!(),
         };
         FuncOrDataId::DebugSection(debugid).into()
+    }
+}
+
+pub struct FunctionDebugContext {
+    entry_id: UnitEntryId,
+}
+
+impl FunctionDebugContext {
+    pub fn new(debug_context: &mut DebugContext, name: &str, _sig: &Signature) -> Self {
+        let unit = debug_context.units.get_mut(debug_context.unit_id);
+        // FIXME: add to appropriate scope intead of root
+        let scope = unit.root();
+        let entry_id = unit.add(scope, gimli::DW_TAG_subprogram);
+        {
+            let entry = unit.get_mut(entry_id);
+            let name_id = debug_context.strings.add(name);
+            entry.set(gimli::DW_AT_linkage_name, AttributeValue::StringRef(name_id));
+        }
+        FunctionDebugContext {
+            entry_id,
+        }
     }
 }
 

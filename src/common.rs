@@ -558,6 +558,7 @@ pub struct FunctionCx<'a, 'tcx: 'a, B: Backend> {
     pub clif_comments: crate::pretty_clif::CommentWriter,
     pub constants: &'a mut crate::constant::ConstantCx,
     pub caches: &'a mut Caches<'tcx>,
+    pub debug_context: Option<FunctionDebugContext>,
 }
 
 impl<'a, 'tcx: 'a, B: Backend + 'a> fmt::Debug for FunctionCx<'a, 'tcx, B> {

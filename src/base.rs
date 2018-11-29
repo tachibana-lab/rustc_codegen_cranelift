@@ -69,6 +69,11 @@ fn trans_fn<'a, 'clif, 'tcx: 'a, B: Backend + 'static>(
     let func_id = cx.module
         .declare_function(&name, linkage, &sig)
         .unwrap();
+    let debug_context = cx.debug_context.as_mut().map(|debug_context| FunctionDebugContext::new(
+        debug_context,
+        &name,
+        &sig,
+    ));
 
     // Step 3. Make FunctionBuilder
     let mut func = Function::with_name_signature(ExternalName::user(0, 0), sig);
@@ -101,6 +106,7 @@ fn trans_fn<'a, 'clif, 'tcx: 'a, B: Backend + 'static>(
         clif_comments,
         constants: &mut cx.ccx,
         caches: &mut cx.caches,
+        debug_context,
     };
 
     // Step 6. Codegen function
