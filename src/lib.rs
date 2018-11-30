@@ -60,7 +60,7 @@ mod prelude {
     pub use std::collections::{HashMap, HashSet};
 
     pub use syntax::ast::{FloatTy, IntTy, UintTy};
-    pub use syntax::source_map::DUMMY_SP;
+    pub use syntax::source_map::{DUMMY_SP, Span, Pos};
 
     pub use rustc::bug;
     pub use rustc::hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
@@ -86,7 +86,7 @@ mod prelude {
     pub use rustc_codegen_ssa::traits::*;
 
     pub use cranelift::codegen::ir::{
-        condcodes::IntCC, function::Function, ExternalName, FuncRef, Inst, StackSlot,
+        condcodes::IntCC, function::Function, ExternalName, FuncRef, Inst, StackSlot, SourceLoc,
     };
     pub use cranelift::codegen::isa::CallConv;
     pub use cranelift::codegen::Context;

@@ -69,8 +69,10 @@ fn trans_fn<'a, 'clif, 'tcx: 'a, B: Backend + 'static>(
     let func_id = cx.module
         .declare_function(&name, linkage, &sig)
         .unwrap();
-    let debug_context = cx.debug_context.as_mut().map(|debug_context| FunctionDebugContext::new(
+    let mut debug_context = cx.debug_context.as_mut().map(|debug_context| FunctionDebugContext::new(
+        tcx,
         debug_context,
+        mir,
         &name,
         &sig,
     ));
@@ -106,7 +108,7 @@ fn trans_fn<'a, 'clif, 'tcx: 'a, B: Backend + 'static>(
         clif_comments,
         constants: &mut cx.ccx,
         caches: &mut cx.caches,
-        debug_context,
+        spans: Vec::new(),
     };
 
     // Step 6. Codegen function
@@ -114,6 +116,7 @@ fn trans_fn<'a, 'clif, 'tcx: 'a, B: Backend + 'static>(
         crate::abi::codegen_fn_prelude(&mut fx, start_ebb);
         codegen_fn_content(&mut fx);
     });
+    let spans = fx.spans.clone();
 
     // Step 7. Write function to file for debugging
     #[cfg(debug_assertions)]
@@ -127,10 +130,10 @@ fn trans_fn<'a, 'clif, 'tcx: 'a, B: Backend + 'static>(
     cx.module
         .define_function(func_id, &mut cx.caches.context)
         .unwrap();
+    let module = &mut cx.module;
+    let caches = &cx.caches;
+    debug_context.as_mut().map(|x| x.define(tcx, module, &caches.context, &spans[..]));
     cx.caches.context.clear();
-
-    // Step 10. Define debuginfo??
-    // caches.context.func should have all the debug loc stuff?
 }
 
 fn verify_func(tcx: TyCtxt, writer: crate::pretty_clif::CommentWriter, func: &Function) {
@@ -177,6 +180,9 @@ fn codegen_fn_content<'a, 'tcx: 'a>(fx: &mut FunctionCx<'a, 'tcx, impl Backend>)
             let inst = fx.bcx.func.layout.last_inst(ebb).unwrap();
             fx.add_comment(inst, terminator_head);
         }
+
+        // FIXME: probably need to call this in more places
+        fx.set_debug_loc(bb_data.terminator().source_info);
 
         match &bb_data.terminator().kind {
             TerminatorKind::Goto { target } => {
@@ -330,6 +336,8 @@ fn trans_stmt<'a, 'tcx: 'a>(
     stmt: &Statement<'tcx>,
 ) {
     let _print_guard = PrintOnPanic(|| format!("stmt {:?}", stmt));
+
+    fx.set_debug_loc(stmt.source_info);
 
     #[cfg(debug_assertions)]
     match &stmt.kind {
