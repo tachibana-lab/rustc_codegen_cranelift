@@ -92,7 +92,7 @@ mod prelude {
     pub use cranelift::codegen::Context;
     pub use cranelift::prelude::*;
     pub use cranelift_module::{
-        self, Backend, DataContext, DataId, DebugSectionContext, DebugSectionId, DebugReloc, FuncId, FuncOrDataId, Linkage,
+        self, Backend, DataContext, DataId, FuncId, FuncOrDataId, Linkage,
         Module,
     };
     pub use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
@@ -272,9 +272,13 @@ impl CodegenBackend for CraneliftCodegenBackend {
                 module
             };
 
-            let emit_module = |name: &str, kind: ModuleKind, mut module: Module<FaerieBackend>| {
+            let emit_module = |name: &str, kind: ModuleKind, mut module: Module<FaerieBackend>, debug: Option<DebugContext>| {
                 module.finalize_definitions();
-                let artifact = module.finish().artifact;
+                let mut artifact = module.finish().artifact;
+
+                if let Some(debug) = debug {
+                    debug.emit(&mut artifact);
+                }
 
                 let tmp_file = tcx
                     .output_filenames(LOCAL_CRATE)
@@ -293,17 +297,13 @@ impl CodegenBackend for CraneliftCodegenBackend {
             let mut faerie_module = new_module("some_file".to_string());
 
             let mut debug = if tcx.sess.opts.debuginfo != DebugInfo::None {
-                let debug = DebugContext::new(tcx, faerie_module.target_config().pointer_type().bytes() as u8, &mut faerie_module);
+                let debug = DebugContext::new(tcx, faerie_module.target_config().pointer_type().bytes() as u8);
                 Some(debug)
             } else {
                 None
             };
 
             codegen_cgus(tcx, &mut faerie_module, &mut debug, &mut log);
-
-            if let Some(debug) = debug {
-                debug.emit(&mut faerie_module);
-            }
 
             tcx.sess.abort_if_errors();
 
@@ -313,9 +313,9 @@ impl CodegenBackend for CraneliftCodegenBackend {
 
             return Box::new(CodegenResults {
                 crate_name: tcx.crate_name(LOCAL_CRATE),
-                modules: vec![emit_module("dummy_name", ModuleKind::Regular, faerie_module)],
+                modules: vec![emit_module("dummy_name", ModuleKind::Regular, faerie_module, debug)],
                 allocator_module: if created_alloc_shim {
-                    Some(emit_module("allocator_shim", ModuleKind::Allocator, allocator_module))
+                    Some(emit_module("allocator_shim", ModuleKind::Allocator, allocator_module, None))
                 } else {
                     None
                 },

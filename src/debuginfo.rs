@@ -12,21 +12,27 @@ use gimli::Format;
 // FIXME: use target endian
 use gimli::NativeEndian;
 
+use faerie::*;
+
+struct DebugReloc {
+    offset: u32,
+    size: u8,
+    name: String,
+    addend: i64,
+}
+
 pub struct DebugContext {
     strings: StringTable,
     units: UnitTable,
     unit_id: UnitId,
-    debug_abbrev_id: DebugSectionId,
-    debug_info_id: DebugSectionId,
-    debug_str_id: DebugSectionId,
 }
 
 impl DebugContext {
-    pub fn new(tcx: TyCtxt, address_size: u8, module: &mut Module<impl Backend + 'static>) -> Self {
+    pub fn new(tcx: TyCtxt, address_size: u8) -> Self {
         let mut units = UnitTable::default();
         let mut strings = StringTable::default();
         // TODO: this should be configurable
-        let version = 5;
+        let version = 4;
         let unit_id = units.add(CompilationUnit::new(version, address_size, Format::Dwarf32));
         {
             // FIXME: how to get version when building out of tree?
@@ -56,21 +62,14 @@ impl DebugContext {
             // FIXME: DW_AT_ranges
         }
 
-        let debug_abbrev_id = module.declare_debug_section(SectionId::DebugAbbrev.name()).unwrap();
-        let debug_info_id = module.declare_debug_section(SectionId::DebugInfo.name()).unwrap();
-        let debug_str_id = module.declare_debug_section(SectionId::DebugStr.name()).unwrap();
-
         DebugContext {
             strings,
             units,
             unit_id,
-            debug_abbrev_id,
-            debug_info_id,
-            debug_str_id,
         }
     }
 
-    pub fn emit(&self, module: &mut Module<impl Backend + 'static>) {
+    pub fn emit(&self, artifact: &mut Artifact) {
         let mut debug_abbrev = DebugAbbrev::from(WriterRelocate::new(self));
         let mut debug_info = DebugInfo::from(WriterRelocate::new(self));
         let mut debug_str = DebugStr::from(WriterRelocate::new(self));
@@ -81,43 +80,55 @@ impl DebugContext {
             .write(&mut debug_abbrev, &mut debug_info, &debug_line_offsets, &debug_str_offsets)
             .unwrap();
 
-        module
-            .define_debug_section(
-                self.debug_abbrev_id,
-                DebugSectionContext {
-                    data: debug_abbrev.0.writer.into_vec(),
-                    relocs: debug_abbrev.0.relocs,
+        artifact.declare_with(SectionId::DebugAbbrev.name(), Decl::DebugSection, debug_abbrev.0.writer.into_vec());
+        artifact.declare_with(SectionId::DebugInfo.name(), Decl::DebugSection, debug_info.0.writer.into_vec());
+        artifact.declare_with(SectionId::DebugStr.name(), Decl::DebugSection, debug_str.0.writer.into_vec());
+
+        for reloc in debug_abbrev.0.relocs {
+            artifact.link_with(
+                faerie::Link {
+                    from: SectionId::DebugAbbrev.name(),
+                    to: &reloc.name,
+                    at: u64::from(reloc.offset),
                 },
-            )
-            .unwrap();
-        module
-            .define_debug_section(
-                self.debug_info_id,
-                DebugSectionContext {
-                    data: debug_info.0.writer.into_vec(),
-                    relocs: debug_info.0.relocs,
+                faerie::Reloc::Debug {
+                    size: reloc.size,
+                    addend: reloc.addend as i32,
                 },
-            )
-            .unwrap();
-        module
-            .define_debug_section(
-                self.debug_str_id,
-                DebugSectionContext {
-                    data: debug_str.0.writer.into_vec(),
-                    relocs: debug_str.0.relocs,
+            ).expect("faerie relocation error");
+        }
+
+        for reloc in debug_info.0.relocs {
+            artifact.link_with(
+                faerie::Link {
+                    from: SectionId::DebugInfo.name(),
+                    to: &reloc.name,
+                    at: u64::from(reloc.offset),
                 },
-            )
-            .unwrap();
+                faerie::Reloc::Debug {
+                    size: reloc.size,
+                    addend: reloc.addend as i32,
+                },
+            ).expect("faerie relocation error");
+        }
+
+        for reloc in debug_str.0.relocs {
+            artifact.link_with(
+                faerie::Link {
+                    from: SectionId::DebugStr.name(),
+                    to: &reloc.name,
+                    at: u64::from(reloc.offset),
+                },
+                faerie::Reloc::Debug {
+                    size: reloc.size,
+                    addend: reloc.addend as i32,
+                },
+            ).expect("faerie relocation error");
+        }
     }
 
-    fn section_name(&self, id: SectionId) -> ExternalName {
-        let debugid = match id {
-            SectionId::DebugAbbrev => self.debug_abbrev_id,
-            SectionId::DebugInfo => self.debug_info_id,
-            SectionId::DebugStr => self.debug_str_id,
-            _ => unimplemented!(),
-        };
-        FuncOrDataId::DebugSection(debugid).into()
+    fn section_name(&self, id: SectionId) -> String {
+        id.name().to_string()
     }
 }
 
@@ -162,7 +173,7 @@ impl<'a> FunctionDebugContext<'a> {
         context: &Context,
         spans: &[Span],
     ) {
-        let encinfo = module.isa().encoding_info();
+        /*let encinfo = module.isa().encoding_info();
         let func = &context.func;
         for ebb in func.layout.ebbs() {
             for (offset, inst, _) in func.inst_offsets(ebb, &encinfo) {
@@ -175,7 +186,7 @@ impl<'a> FunctionDebugContext<'a> {
                         .warn(&format!("srcloc {} {}:{}:{}", offset, file, loc.line, loc.col.to_usize()));
                 }
             }
-        }
+        }*/
     }
 }
 
