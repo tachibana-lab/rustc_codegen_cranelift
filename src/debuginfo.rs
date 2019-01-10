@@ -25,6 +25,7 @@ pub struct DebugContext {
     strings: StringTable,
     units: UnitTable,
     unit_id: UnitId,
+    symbol_names: Vec<String>,
 }
 
 impl DebugContext {
@@ -55,7 +56,7 @@ impl DebugContext {
                 gimli::DW_AT_language,
                 AttributeValue::Language(gimli::DW_LANG_Rust),
             );
-            root.set(gimli::DW_AT_name, AttributeValue::StringRef(name));
+            //root.set(gimli::DW_AT_name, AttributeValue::StringRef(name));
             root.set(gimli::DW_AT_comp_dir, AttributeValue::StringRef(comp_dir));
             // FIXME: DW_AT_stmt_list
             // FIXME: DW_AT_low_pc
@@ -66,6 +67,7 @@ impl DebugContext {
             strings,
             units,
             unit_id,
+            symbol_names: Vec::new(),
         }
     }
 
@@ -151,11 +153,21 @@ impl<'a> FunctionDebugContext<'a> {
         let entry_id = unit.add(scope, gimli::DW_TAG_subprogram);
         let entry = unit.get_mut(entry_id);
         let name_id = debug_context.strings.add(name);
+        let dummy_name_id = debug_context.strings.add("dummy".to_string() + name);
         let loc = tcx.sess.source_map().lookup_char_pos(mir.span.lo());
         // FIXME: use file index into unit's line table
         // FIXME: specify directory too?
         let file_id = debug_context.strings.add(loc.file.name.to_string());
         entry.set(gimli::DW_AT_linkage_name, AttributeValue::StringRef(name_id));
+        entry.set(gimli::DW_AT_name, AttributeValue::StringRef(dummy_name_id));
+
+        let symbol = debug_context.symbol_names.len();
+        debug_context.symbol_names.push(name.to_string());
+
+        entry.set(gimli::DW_AT_low_pc, AttributeValue::Address(Address::Relative {
+            symbol,
+            addend: 0,
+        }));
         entry.set(gimli::DW_AT_decl_file, AttributeValue::StringRef(file_id));
         entry.set(gimli::DW_AT_decl_line, AttributeValue::Udata(loc.line as u64));
         // FIXME: probably omit this
@@ -169,10 +181,20 @@ impl<'a> FunctionDebugContext<'a> {
     pub fn define(
         &mut self,
         tcx: TyCtxt,
-        module: &mut Module<impl Backend>,
+        //module: &mut Module<impl Backend>,
+        size: u32,
         context: &Context,
         spans: &[Span],
     ) {
+        use byteorder::ByteOrder;
+
+        let unit = self.debug_context.units.get_mut(self.debug_context.unit_id);
+        // FIXME: add to appropriate scope intead of root
+        let scope = unit.root();
+        let entry = unit.get_mut(self.entry_id);
+        let mut size_array = [0; 8];
+        byteorder::LittleEndian::write_u64(&mut size_array, size as u64);
+        entry.set(gimli::DW_AT_high_pc, AttributeValue::Data8(size_array));
         /*let encinfo = module.isa().encoding_info();
         let func = &context.func;
         for ebb in func.layout.ebbs() {
@@ -226,22 +248,19 @@ impl<'a> Writer for WriterRelocate<'a> {
     }
 
     fn write_address(&mut self, address: Address, size: u8) -> Result<()> {
-        /*
         match address {
             Address::Absolute(val) => self.write_word(val, size),
             Address::Relative { symbol, addend } => {
                 let offset = self.len() as u64;
-                self.relocs.push(Relocation::Symbol {
-                    offset,
-                    symbol,
-                    addend: addend as i32,
+                self.relocs.push(DebugReloc {
+                    offset: offset as u32,
                     size,
+                    name: self.ctx.symbol_names[symbol].clone(),
+                    addend: addend as i64,
                 });
                 self.write_word(0, size)
             }
         }
-        */
-        unimplemented!();
     }
 
     fn write_offset(&mut self, val: usize, section: SectionId, size: u8) -> Result<()> {
