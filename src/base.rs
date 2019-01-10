@@ -128,8 +128,8 @@ fn trans_fn<'a, 'clif, 'tcx: 'a, B: Backend + 'static>(
     // Step 9. Define function
     cx.caches.context.func = func;
     cx.module
-        .define_function_peek_compiled(func_id, &mut cx.caches.context, |size, context| {
-            debug_context.as_mut().map(|x| x.define(tcx, size, context, &spans[..]));
+        .define_function_peek_compiled(func_id, &mut cx.caches.context, |size, context, isa| {
+            debug_context.as_mut().map(|x| x.define(tcx, size, context, isa, &spans[..]));
         })
         .unwrap();
     //let module = &mut cx.module;

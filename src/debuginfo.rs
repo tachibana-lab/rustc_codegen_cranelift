@@ -3,9 +3,9 @@ extern crate gimli;
 use crate::prelude::*;
 
 use gimli::write::{
-    Address, AttributeValue, DebugAbbrev, DebugInfo, DebugStr, EndianVec, Result, SectionId,
+    Address, AttributeValue, DebugAbbrev, DebugInfo, DebugStr, DebugLine, EndianVec, Result, SectionId,
     StringTable, UnitId, UnitTable, Writer, CompilationUnit, DebugLineOffsets,
-    UnitEntryId,
+    UnitEntryId, LineProgram, LineProgramTable,
 };
 use gimli::Format;
 
@@ -25,6 +25,7 @@ pub struct DebugContext {
     strings: StringTable,
     units: UnitTable,
     unit_id: UnitId,
+    line_programs: LineProgramTable,
     symbol_names: Vec<String>,
 }
 
@@ -67,6 +68,7 @@ impl DebugContext {
             strings,
             units,
             unit_id,
+            line_programs: LineProgramTable::default(),
             symbol_names: Vec::new(),
         }
     }
@@ -75,8 +77,9 @@ impl DebugContext {
         let mut debug_abbrev = DebugAbbrev::from(WriterRelocate::new(self));
         let mut debug_info = DebugInfo::from(WriterRelocate::new(self));
         let mut debug_str = DebugStr::from(WriterRelocate::new(self));
+        let mut debug_line = DebugLine::from(WriterRelocate::new(self));
 
-        let debug_line_offsets = DebugLineOffsets::default();
+        let debug_line_offsets = self.line_programs.write(&mut debug_line).unwrap();
         let debug_str_offsets = self.strings.write(&mut debug_str).unwrap();
         self.units
             .write(&mut debug_abbrev, &mut debug_info, &debug_line_offsets, &debug_str_offsets)
@@ -85,6 +88,8 @@ impl DebugContext {
         artifact.declare_with(SectionId::DebugAbbrev.name(), Decl::DebugSection, debug_abbrev.0.writer.into_vec());
         artifact.declare_with(SectionId::DebugInfo.name(), Decl::DebugSection, debug_info.0.writer.into_vec());
         artifact.declare_with(SectionId::DebugStr.name(), Decl::DebugSection, debug_str.0.writer.into_vec());
+        artifact.declare_with(SectionId::DebugLine.name(), Decl::DebugSection, debug_line.0.writer.into_vec());
+
 
         for reloc in debug_abbrev.0.relocs {
             artifact.link_with(
@@ -127,6 +132,20 @@ impl DebugContext {
                 },
             ).expect("faerie relocation error");
         }
+
+        for reloc in debug_line.0.relocs {
+            artifact.link_with(
+                faerie::Link {
+                    from: SectionId::DebugLine.name(),
+                    to: &reloc.name,
+                    at: u64::from(reloc.offset),
+                },
+                faerie::Reloc::Debug {
+                    size: reloc.size,
+                    addend: reloc.addend as i32,
+                },
+            ).expect("faerie relocation error");
+        }
     }
 
     fn section_name(&self, id: SectionId) -> String {
@@ -136,7 +155,9 @@ impl DebugContext {
 
 pub struct FunctionDebugContext<'a> {
     debug_context: &'a mut DebugContext,
+    mir_span: Span,
     entry_id: UnitEntryId,
+    symbol: usize,
 }
 
 impl<'a> FunctionDebugContext<'a> {
@@ -172,9 +193,25 @@ impl<'a> FunctionDebugContext<'a> {
         entry.set(gimli::DW_AT_decl_line, AttributeValue::Udata(loc.line as u64));
         // FIXME: probably omit this
         entry.set(gimli::DW_AT_decl_column, AttributeValue::Udata(loc.col.to_usize() as u64));
+
+
+        let int_id = unit.add(scope, gimli::DW_TAG_base_type);
+        let int = unit.get_mut(int_id);
+        let int_name = debug_context.strings.add("int");
+        int.set(gimli::DW_AT_byte_size, AttributeValue::Data1([4]));
+        int.set(gimli::DW_AT_encoding, AttributeValue::Data1([5]));
+        int.set(gimli::DW_AT_name, AttributeValue::StringRef(int_name));
+
+        let param_id = unit.add(entry_id, gimli::DW_TAG_formal_parameter);
+        let param = unit.get_mut(param_id);
+        param.set(gimli::DW_AT_name, AttributeValue::StringRef(int_name));
+        param.set(gimli::DW_AT_type, AttributeValue::ThisUnitEntryRef(int_id));
+
         FunctionDebugContext {
             debug_context,
+            mir_span: mir.span,
             entry_id,
+            symbol,
         }
     }
 
@@ -184,6 +221,7 @@ impl<'a> FunctionDebugContext<'a> {
         //module: &mut Module<impl Backend>,
         size: u32,
         context: &Context,
+        isa: &cranelift::codegen::isa::TargetIsa,
         spans: &[Span],
     ) {
         use byteorder::ByteOrder;
@@ -195,10 +233,41 @@ impl<'a> FunctionDebugContext<'a> {
         let mut size_array = [0; 8];
         byteorder::LittleEndian::write_u64(&mut size_array, size as u64);
         entry.set(gimli::DW_AT_high_pc, AttributeValue::Data8(size_array));
-        /*let encinfo = module.isa().encoding_info();
+
+        let file = tcx.sess.source_map().lookup_char_pos(self.mir_span.lo()).file.name.to_string();
+
+        let mut line_program = LineProgram::new(
+            4,
+            8,
+            Format::Dwarf32,
+            1,
+            1,
+            -5,
+            14,
+            b"",
+            b"",
+            None,
+        );
+
+        let default_dir = line_program.default_directory();
+        let the_file = line_program.add_file(
+            b"mini_core_hello_world.rs",
+            default_dir,
+            None,
+        );
+
+        line_program.begin_sequence(Some(Address::Relative {
+            symbol: self.symbol,
+            addend: 0,
+        }));
+        line_program.row().file = the_file;
+
+        let encinfo = isa.encoding_info();
         let func = &context.func;
-        for ebb in func.layout.ebbs() {
-            for (offset, inst, _) in func.inst_offsets(ebb, &encinfo) {
+        let mut ebbs = func.layout.ebbs().collect::<Vec<_>>();
+        ebbs.sort_by_key(|ebb|func.offsets[*ebb]); // Ensure inst offsets always increase
+        for ebb in ebbs {
+            for (offset, inst, size) in func.inst_offsets(ebb, &encinfo) {
                 let srcloc = func.srclocs[inst];
                 if !srcloc.is_default() {
                     let span = spans[srcloc.bits() as usize];
@@ -206,9 +275,17 @@ impl<'a> FunctionDebugContext<'a> {
                     let file = loc.file.name.to_string();
                     tcx.sess
                         .warn(&format!("srcloc {} {}:{}:{}", offset, file, loc.line, loc.col.to_usize()));
+                    line_program.row().address_offset = offset as u64;
+                    line_program.row().line = loc.line as u64;
+                    line_program.generate_row();
                 }
             }
-        }*/
+        }
+
+        let address_offset = line_program.row().address_offset;
+        line_program.end_sequence(address_offset);
+        println!("{:?}", line_program);
+        self.debug_context.line_programs.add(line_program);
     }
 }
 
