@@ -14,26 +14,24 @@ extern crate rustc_target;
 extern crate syntax;
 
 use std::any::Any;
-use std::fs::File;
-use std::sync::mpsc;
-use std::os::raw::{c_char, c_int};
 use std::ffi::CString;
+use std::fs::File;
+use std::os::raw::{c_char, c_int};
+use std::sync::mpsc;
 
 use rustc::dep_graph::DepGraph;
 use rustc::middle::cstore::MetadataLoader;
+use rustc::mir::mono::{Linkage as RLinkage, Visibility};
 use rustc::session::{
     config::{OutputFilenames, OutputType},
     CompileIncomplete,
 };
 use rustc::ty::query::Providers;
-use rustc::mir::mono::{Linkage as RLinkage, Visibility};
 use rustc_codegen_ssa::back::linker::LinkerInfo;
 use rustc_codegen_ssa::CrateInfo;
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
-use rustc_codegen_utils::link::out_filename;
 
 use cranelift::codegen::settings;
-use cranelift_faerie::*;
 
 use crate::constant::ConstantCx;
 use crate::prelude::*;
@@ -46,8 +44,6 @@ mod base;
 mod common;
 mod constant;
 mod intrinsics;
-mod link;
-mod link_copied;
 mod main_shim;
 mod metadata;
 mod pretty_clif;
@@ -83,8 +79,8 @@ mod prelude {
     pub use rustc_mir::monomorphize::{collector, MonoItem};
 
     pub use rustc_codegen_ssa::mir::operand::{OperandRef, OperandValue};
-    pub use rustc_codegen_ssa::{CodegenResults, CompiledModule, ModuleKind};
     pub use rustc_codegen_ssa::traits::*;
+    pub use rustc_codegen_ssa::{CodegenResults, CompiledModule, ModuleKind};
 
     pub use cranelift::codegen::ir::{
         condcodes::IntCC, function::Function, ExternalName, FuncRef, Inst, StackSlot,
@@ -209,117 +205,47 @@ impl CodegenBackend for CraneliftCodegenBackend {
             None
         };
 
-        if std::env::var("SHOULD_RUN").is_ok() {
-            let mut jit_module: Module<SimpleJITBackend> = Module::new(SimpleJITBuilder::new());
-            assert_eq!(pointer_ty(tcx), jit_module.target_config().pointer_type());
+        let mut jit_module: Module<SimpleJITBackend> = Module::new(SimpleJITBuilder::new());
+        assert_eq!(pointer_ty(tcx), jit_module.target_config().pointer_type());
 
-            let sig = Signature {
-                params: vec![
-                    AbiParam::new(jit_module.target_config().pointer_type()),
-                    AbiParam::new(jit_module.target_config().pointer_type()),
-                ],
-                returns: vec![AbiParam::new(
-                    jit_module.target_config().pointer_type(), /*isize*/
-                )],
-                call_conv: CallConv::SystemV,
-            };
-            let main_func_id = jit_module
-                .declare_function("main", Linkage::Import, &sig)
-                .unwrap();
+        let sig = Signature {
+            params: vec![
+                AbiParam::new(jit_module.target_config().pointer_type()),
+                AbiParam::new(jit_module.target_config().pointer_type()),
+            ],
+            returns: vec![AbiParam::new(
+                jit_module.target_config().pointer_type(), /*isize*/
+            )],
+            call_conv: CallConv::SystemV,
+        };
+        let main_func_id = jit_module
+            .declare_function("main", Linkage::Import, &sig)
+            .unwrap();
 
-            codegen_cgus(tcx, &mut jit_module, &mut log);
-            crate::allocator::codegen(tcx.sess, &mut jit_module);
-            jit_module.finalize_definitions();
+        codegen_cgus(tcx, &mut jit_module, &mut log);
+        crate::allocator::codegen(tcx.sess, &mut jit_module);
+        jit_module.finalize_definitions();
 
-            tcx.sess.abort_if_errors();
+        tcx.sess.abort_if_errors();
 
-            let finalized_main: *const u8 = jit_module.get_finalized_function(main_func_id);
+        let finalized_main: *const u8 = jit_module.get_finalized_function(main_func_id);
 
-            println!("Rustc codegen cranelift will JIT run the executable, because the SHOULD_RUN env var is set");
+        let f: extern "C" fn(c_int, *const *const c_char) -> c_int =
+            unsafe { ::std::mem::transmute(finalized_main) };
 
-            let f: extern "C" fn(c_int, *const *const c_char) -> c_int =
-                unsafe { ::std::mem::transmute(finalized_main) };
+        let args = ::std::env::var("JIT_ARGS").unwrap_or_else(|_| String::new());
+        let args = args
+            .split(" ")
+            .chain(Some(&*tcx.crate_name(LOCAL_CRATE).as_str().to_string()))
+            .map(|arg| CString::new(arg).unwrap())
+            .collect::<Vec<_>>();
+        let argv = args.iter().map(|arg| arg.as_ptr()).collect::<Vec<_>>();
+        // TODO: Rust doesn't care, but POSIX argv has a NULL sentinel at the end
 
-            let args = ::std::env::var("JIT_ARGS").unwrap_or_else(|_|String::new());
-            let args = args
-                .split(" ")
-                .chain(Some(&*tcx.crate_name(LOCAL_CRATE).as_str().to_string()))
-                .map(|arg| CString::new(arg).unwrap()).collect::<Vec<_>>();
-            let argv = args.iter().map(|arg| arg.as_ptr()).collect::<Vec<_>>();
-            // TODO: Rust doesn't care, but POSIX argv has a NULL sentinel at the end
+        let ret = f(args.len() as c_int, argv.as_ptr());
 
-            let ret = f(args.len() as c_int, argv.as_ptr());
-
-            jit_module.finish();
-            std::process::exit(ret);
-        } else {
-            let new_module = |name: String| {
-                let module: Module<FaerieBackend> = Module::new(
-                    FaerieBuilder::new(
-                        build_isa(tcx.sess),
-                        name + ".o",
-                        FaerieTrapCollection::Disabled,
-                        FaerieBuilder::default_libcall_names(),
-                    )
-                    .unwrap(),
-                );
-                assert_eq!(
-                    pointer_ty(tcx),
-                    module.target_config().pointer_type()
-                );
-                module
-            };
-
-            let emit_module = |name: &str, kind: ModuleKind, mut module: Module<FaerieBackend>| {
-                module.finalize_definitions();
-                let artifact = module.finish().artifact;
-
-                let tmp_file = tcx
-                    .output_filenames(LOCAL_CRATE)
-                    .temp_path(OutputType::Object, Some(name));
-                let obj = artifact.emit().unwrap();
-                std::fs::write(&tmp_file, obj).unwrap();
-                CompiledModule {
-                    name: name.to_string(),
-                    kind,
-                    object: Some(tmp_file),
-                    bytecode: None,
-                    bytecode_compressed: None,
-                }
-            };
-
-            let mut faerie_module = new_module("some_file".to_string());
-
-            codegen_cgus(tcx, &mut faerie_module, &mut log);
-
-            tcx.sess.abort_if_errors();
-
-            let mut allocator_module = new_module("allocator_shim.o".to_string());
-            let created_alloc_shim =
-                crate::allocator::codegen(tcx.sess, &mut allocator_module);
-
-            return Box::new(CodegenResults {
-                crate_name: tcx.crate_name(LOCAL_CRATE),
-                modules: vec![emit_module("dummy_name", ModuleKind::Regular, faerie_module)],
-                allocator_module: if created_alloc_shim {
-                    Some(emit_module("allocator_shim", ModuleKind::Allocator, allocator_module))
-                } else {
-                    None
-                },
-                metadata_module: CompiledModule {
-                    name: "dummy_metadata".to_string(),
-                    kind: ModuleKind::Metadata,
-                    object: None,
-                    bytecode: None,
-                    bytecode_compressed: None,
-                },
-                crate_hash: tcx.crate_hash(LOCAL_CRATE),
-                metadata,
-                windows_subsystem: None, // Windows is not yet supported
-                linker_info: LinkerInfo::new(tcx),
-                crate_info: CrateInfo::new(tcx),
-            });
-        }
+        jit_module.finish();
+        std::process::exit(ret);
     }
 
     fn join_codegen_and_link(
@@ -332,17 +258,6 @@ impl CodegenBackend for CraneliftCodegenBackend {
         let res = *res
             .downcast::<CodegenResults>()
             .expect("Expected CraneliftCodegenBackend's CodegenResult, found Box<Any>");
-
-        for &crate_type in sess.opts.crate_types.iter() {
-            let output_name = out_filename(sess, crate_type, &outputs, &res.crate_name.as_str());
-            match crate_type {
-                CrateType::Rlib => link::link_rlib(sess, &res, output_name),
-                CrateType::Dylib | CrateType::Executable => {
-                    link::link_natively(sess, crate_type, &res, &output_name);
-                }
-                _ => sess.fatal(&format!("Unsupported crate type: {:?}", crate_type)),
-            }
-        }
         Ok(())
     }
 }
