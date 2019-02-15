@@ -69,13 +69,6 @@ fn trans_fn<'a, 'clif, 'tcx: 'a, B: Backend + 'static>(
     let func_id = cx.module
         .declare_function(&name, linkage, &sig)
         .unwrap();
-    let mut debug_context = cx.debug_context.as_mut().map(|debug_context| FunctionDebugContext::new(
-        tcx,
-        debug_context,
-        mir,
-        &name,
-        &sig,
-    ));
 
     // Step 3. Make FunctionBuilder
     let mut func = Function::with_name_signature(ExternalName::user(0, 0), sig);
@@ -108,7 +101,6 @@ fn trans_fn<'a, 'clif, 'tcx: 'a, B: Backend + 'static>(
         clif_comments,
         constants: &mut cx.ccx,
         caches: &mut cx.caches,
-        source_info_set: indexmap::IndexSet::new(),
     };
 
     // Step 6. Codegen function
@@ -116,7 +108,6 @@ fn trans_fn<'a, 'clif, 'tcx: 'a, B: Backend + 'static>(
         crate::abi::codegen_fn_prelude(&mut fx, start_ebb);
         codegen_fn_content(&mut fx);
     });
-    let source_info_set = fx.source_info_set.clone();
 
     // Step 7. Write function to file for debugging
     #[cfg(debug_assertions)]
@@ -129,12 +120,7 @@ fn trans_fn<'a, 'clif, 'tcx: 'a, B: Backend + 'static>(
     cx.caches.context.func = func;
     cx.module.define_function(func_id, &mut cx.caches.context).unwrap();
 
-    // Step 10. Define debuginfo for function
-    let context = &cx.caches.context;
-    let isa = cx.module.isa();
-    debug_context.as_mut().map(|x| x.define(tcx, context, isa, &source_info_set));
-
-    // Step 11. Clear context to make it usable for the next function
+    // Step 10. Clear context to make it usable for the next function
     cx.caches.context.clear();
 }
 
@@ -168,7 +154,6 @@ fn codegen_fn_content<'a, 'tcx: 'a>(fx: &mut FunctionCx<'a, 'tcx, impl Backend>)
 
         fx.bcx.ins().nop();
         for stmt in &bb_data.statements {
-            fx.set_debug_loc(stmt.source_info);
             trans_stmt(fx, ebb, stmt);
         }
 
@@ -183,8 +168,6 @@ fn codegen_fn_content<'a, 'tcx: 'a>(fx: &mut FunctionCx<'a, 'tcx, impl Backend>)
             let inst = fx.bcx.func.layout.last_inst(ebb).unwrap();
             fx.add_comment(inst, terminator_head);
         }
-
-        fx.set_debug_loc(bb_data.terminator().source_info);
 
         match &bb_data.terminator().kind {
             TerminatorKind::Goto { target } => {
@@ -305,8 +288,6 @@ fn trans_stmt<'a, 'tcx: 'a>(
     stmt: &Statement<'tcx>,
 ) {
     let _print_guard = PrintOnPanic(|| format!("stmt {:?}", stmt));
-
-    fx.set_debug_loc(stmt.source_info);
 
     #[cfg(debug_assertions)]
     match &stmt.kind {
